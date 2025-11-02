@@ -1,0 +1,168 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # v1.0.0 のようなタグをプッシュした時に実行
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name for the release (e.g., v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-for-ec2:
+    name: Build for EC2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build for EC2
+        run: npm run build
+        env:
+          NODE_ENV: production
+          NEXT_PUBLIC_DEPLOY_TARGET: ec2
+
+      - name: Create EC2 archive
+        run: |
+          cd out
+          zip -r ../nextjs-ec2-build.zip .
+          cd ..
+
+      - name: Upload EC2 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ec2-build
+          path: nextjs-ec2-build.zip
+          retention-days: 1
+
+  build-for-github-pages:
+    name: Build for GitHub Pages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build for GitHub Pages
+        run: npm run build
+        env:
+          NODE_ENV: production
+          NEXT_PUBLIC_DEPLOY_TARGET: github-pages
+
+      - name: Create GitHub Pages archive
+        run: |
+          cd out
+          zip -r ../nextjs-github-pages-build.zip .
+          cd ..
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: github-pages-build
+          path: nextjs-github-pages-build.zip
+          retention-days: 1
+
+  create-release:
+    name: Create Release
+    needs: [build-for-ec2, build-for-github-pages]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download EC2 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ec2-build
+
+      - name: Download GitHub Pages artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: github-pages-build
+
+      - name: Get tag name
+        id: get_tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag_name=${{ inputs.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.get_tag.outputs.tag_name }}
+          name: Release ${{ steps.get_tag.outputs.tag_name }}
+          draft: false
+          prerelease: false
+          files: |
+            nextjs-ec2-build.zip
+            nextjs-github-pages-build.zip
+          body: |
+            ## 静的ビルド配布パッケージ
+            
+            このリリースには2種類のビルドが含まれています：
+            
+            ### 📦 nextjs-ec2-build.zip
+            **AWS EC2などのルートドメイン用**
+            - basePath無し
+            - `http://your-domain.com/` でアクセス可能
+            
+            #### デプロイ方法（EC2）
+            ```bash
+            # ダウンロード
+            wget https://github.com/${{ github.repository }}/releases/download/${{ steps.get_tag.outputs.tag_name }}/nextjs-ec2-build.zip
+            
+            # 解凍
+            unzip nextjs-ec2-build.zip -d /var/www/html
+            
+            # Nginxを再起動
+            sudo systemctl restart nginx
+            ```
+            
+            ### 📦 nextjs-github-pages-build.zip
+            **GitHub Pages用**
+            - basePath: `/deploy_github`
+            - `https://username.github.io/deploy_github/` でアクセス可能
+            
+            #### デプロイ方法（手動）
+            ```bash
+            # ダウンロードして解凍
+            unzip nextjs-github-pages-build.zip -d deploy
+            
+            # gh-pagesブランチにプッシュ
+            cd deploy
+            git init
+            git add .
+            git commit -m "Deploy"
+            git push -f origin HEAD:gh-pages
+            ```
+            
+            ---
+            
+            ### 含まれるファイル
+            - HTML, CSS, JavaScript
+            - 画像などの静的アセット
+            - `.nojekyll` ファイル
+
