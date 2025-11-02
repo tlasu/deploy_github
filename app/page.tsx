@@ -1,6 +1,7 @@
 import Image from "next/image";
 
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+console.log(basePath); // /deploy_github
 
 export default function Home() {
   return (
